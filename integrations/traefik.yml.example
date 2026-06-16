@@ -1,0 +1,29 @@
+# HereOnly forward-auth with Traefik (dynamic configuration).
+#
+#   1) Run the HereOnly auth server ON THE HOST:
+#        hereonly auth --port 7001
+#   2) Load this as Traefik dynamic config (file provider). Traefik's ForwardAuth
+#      sends X-Forwarded-{Method,Uri,Host,For}; HereOnly reads them.
+
+http:
+  middlewares:
+    hereonly:
+      forwardAuth:
+        address: "http://127.0.0.1:7001/auth"
+        authResponseHeaders:
+          - X-HereOnly-Mac
+          - X-HereOnly-Present
+          - X-HereOnly-Network
+
+  routers:
+    my-app:
+      rule: "Host(`app.local`)"
+      entryPoints: [web]
+      middlewares: [hereonly]
+      service: my-app
+
+  services:
+    my-app:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:3000"   # <-- your real app

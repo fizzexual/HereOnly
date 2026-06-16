@@ -1,0 +1,43 @@
+# HereOnly forward-auth with nginx (auth_request).
+#
+#   1) Run the HereOnly auth server ON THE HOST (so it sees the real segment):
+#        hereonly auth --port 7001
+#   2) Drop this into your nginx server block. Only devices proven to be on the
+#      same physical network segment will reach your app.
+
+server {
+    listen 80;
+    server_name _;
+
+    # Internal subrequest to HereOnly. nginx asks "is this client on-segment?"
+    location = /_hereonly {
+        internal;
+        proxy_pass              http://127.0.0.1:7001/auth;
+        proxy_pass_request_body off;
+        proxy_set_header        Content-Length     "";
+        proxy_set_header        X-Real-IP          $remote_addr;
+        proxy_set_header        X-Forwarded-For    $remote_addr;
+        proxy_set_header        X-Forwarded-Uri    $request_uri;
+        proxy_set_header        X-Forwarded-Method $request_method;
+        proxy_set_header        X-Forwarded-Host   $host;
+    }
+
+    location / {
+        auth_request /_hereonly;
+
+        # Optional: forward HereOnly's verdict to your backend.
+        auth_request_set $ho_mac     $upstream_http_x_hereonly_mac;
+        auth_request_set $ho_present $upstream_http_x_hereonly_present;
+        proxy_set_header X-HereOnly-Mac     $ho_mac;
+        proxy_set_header X-HereOnly-Present $ho_present;
+
+        proxy_pass http://127.0.0.1:3000;   # <-- your real app
+
+        error_page 401 403 = @denied;
+    }
+
+    location @denied {
+        default_type text/html;
+        return 403 "<h1>Access denied</h1><p>HereOnly: this device is not on the local network segment.</p>";
+    }
+}

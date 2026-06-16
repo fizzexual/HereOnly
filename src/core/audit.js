@@ -43,6 +43,18 @@ function createAudit(opts = {}) {
   let seq = 0;
   let prevHash = opts.genesis || GENESIS;
 
+  // Continue an existing on-disk log so the chain (and seq) stays unbroken
+  // across restarts — otherwise each process would start a fresh chain and a
+  // concatenated file would fail verification.
+  if (file) {
+    const existing = loadAuditFile(file);
+    if (existing.length) {
+      const last = existing[existing.length - 1];
+      if (typeof last.seq === 'number') seq = last.seq;
+      if (sign && last.hash) prevHash = last.hash;
+    }
+  }
+
   function record(input = {}) {
     seq += 1;
     const e = {

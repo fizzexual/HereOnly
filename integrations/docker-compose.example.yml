@@ -1,0 +1,32 @@
+# HereOnly + Caddy in Docker.
+#
+# IMPORTANT: HereOnly proves physical L2 adjacency by reading the HOST's
+# neighbor (ARP/NDP) table. A container on a bridge network sees only the
+# docker bridge, not your real segment — so the HereOnly service MUST run with
+# `network_mode: host`. The reverse proxy should too, so the client's real IP
+# (not a docker-NAT address) reaches the auth check.
+
+services:
+  hereonly-auth:
+    image: node:20-alpine
+    network_mode: host
+    working_dir: /app
+    command: sh -c "npm i -g github:fizzexual/HereOnly && hereonly auth --port 7001 --audit --sign-audit"
+    volumes:
+      - hereonly-state:/root/.hereonly
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    network_mode: host
+    depends_on: [hereonly-auth]
+    volumes:
+      - ./Caddyfile.example:/etc/caddy/Caddyfile:ro
+    restart: unless-stopped
+
+  # your-app:
+  #   image: your/app
+  #   network_mode: host        # listen on 127.0.0.1:3000
+
+volumes:
+  hereonly-state:

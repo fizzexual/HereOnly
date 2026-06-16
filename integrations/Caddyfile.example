@@ -1,0 +1,22 @@
+# HereOnly forward-auth with Caddy.
+#
+#   1) Run the HereOnly auth server ON THE HOST:
+#        hereonly auth --port 7001
+#   2) Use this Caddyfile. Caddy already sends X-Forwarded-{Method,Uri,For};
+#      HereOnly reads them and answers 204 (allow) or 403 (deny).
+
+:80 {
+	forward_auth 127.0.0.1:7001 {
+		uri /auth
+		header_up X-Real-IP {remote_host}
+		# Copy HereOnly's verdict onto the request to your app:
+		copy_headers X-HereOnly-Mac X-HereOnly-Present X-HereOnly-Network
+	}
+
+	reverse_proxy 127.0.0.1:3000   # <-- your real app
+
+	handle_errors {
+		@denied expression {http.error.status_code} in [401 403]
+		respond @denied "Access denied - HereOnly: not on this network segment." 403
+	}
+}
