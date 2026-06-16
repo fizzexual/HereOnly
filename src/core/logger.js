@@ -11,12 +11,10 @@ function createLogger(opts = {}) {
   const threshold = LEVELS[level] != null ? LEVELS[level] : LEVELS.info;
 
   function emit(lvl, args) {
-    if (threshold === 0) return;
-    if ((LEVELS[lvl] || 0) > threshold) return;
+    if (threshold === 0 || (LEVELS[lvl] || 0) > threshold) return;
     const fn = sink[lvl] || sink.log || (() => {});
     fn.call(sink, prefix, ...args);
   }
-
   return {
     level,
     error: (...a) => emit('error', a),
@@ -26,12 +24,6 @@ function createLogger(opts = {}) {
   };
 }
 
-const noopLogger = {
-  level: 'silent',
-  error() {},
-  warn() {},
-  info() {},
-  debug() {},
-};
+const noopLogger = { level: 'silent', error() {}, warn() {}, info() {}, debug() {} };
 
 module.exports = { createLogger, noopLogger, LEVELS };

@@ -3,31 +3,33 @@
 /**
  * HereOnly verification engine.
  *
- * Produces an allow/deny verdict for a client, combining:
- *   loopback fast-path -> deny-list -> allow-list -> session token fast-path
- *   -> live checks (subnet, ARP/NDP adjacency, network approval).
+ * Produces an allow/deny verdict for a client, combining (in order):
+ *   deny-list -> loopback -> host-self -> allow-list -> rate-limit
+ *   -> session-token fast path -> live checks (subnet, ARP/NDP adjacency,
+ *   network approval).
  *
- * Design notes:
- *  - ARP/NDP adjacency is the PRIMARY gate. When `requireArp` is true (default),
- *    a verified unicast neighbor is what grants access; the subnet check is then
- *    advisory only (a passed ARP implies on-segment even if our subnet
- *    enumeration missed an interface, so subnet must never cause a false-deny).
- *    When `requireArp` is false, the subnet check becomes the gate (a weaker
- *    mode for hosts where the neighbor table can't be read).
- *  - Fail closed: if the neighbor table can't be read, deny (configurable).
- *  - Every successful verdict carries a freshly issued/renewed session token.
+ * ARP/NDP adjacency is the PRIMARY gate. When `requireArp` is true (default) a
+ * verified unicast neighbor grants access and the subnet check is advisory (a
+ * passed ARP implies on-segment even if subnet enumeration missed an
+ * interface, so subnet never causes a false-deny). Fails closed. Every verdict
+ * can be recorded to the physical-access audit log.
  */
 
 const os = require('node:os');
 const { isLoopback, ipInAnyCidr, normalizeIp, extractClientIp } = require('./ip.js');
 const { getLocalSubnets } = require('../os/netinfo.js');
+const { getOwnIps } = require('../os/self.js');
 const { createNeighborCache } = require('./arpcache.js');
-const netid = require('./netident.js');
-const tokenMod = require('./token.js');
+const { createRateLimiter } = require('./ratelimit.js');
+const { createPolicyResolver } = require('./policy.js');
+const { createAudit } = require('./audit.js');
+const fp = require('./fingerprint.js');
+const tokens = require('./tokens.js');
 const { createLogger, noopLogger } = require('./logger.js');
 
 const DEFAULTS = {
   allowLoopback: true,
+  allowSelf: true,
   requireSubnet: true,
   requireArp: true,
   failClosed: true,
@@ -37,43 +39,55 @@ const DEFAULTS = {
   arpTtlMs: 2000,
   netIdentTtlMs: 15000,
   includeWifi: true,
-  fingerprintOpts: undefined, // -> netident.DEFAULT_FP_OPTS
-  network: {}, // { allowedFingerprints, allowedSsids, allowedGatewayMacs }
+  fingerprintOpts: undefined,
+  network: {},
   extraAllowCidrs: [],
   denyCidrs: [],
+  rateLimit: null, // true | {capacity, refillPerSec} | a limiter instance
+  policies: [],
+  audit: null, // true | {file, sign, secret, ...} | an audit instance
 };
+
+function resolveAudit(a, fallbackSecret) {
+  if (!a) return null;
+  if (typeof a.record === 'function') return a;
+  return createAudit(a === true ? {} : { secret: fallbackSecret, ...a });
+}
+
+function resolveLimiter(rl, now) {
+  if (!rl) return null;
+  if (typeof rl.take === 'function') return rl;
+  return createRateLimiter({ ...(rl === true ? {} : rl), now });
+}
 
 function createVerifier(userOptions = {}) {
   const opts = { ...DEFAULTS, ...userOptions };
   const logger =
     userOptions.logger || (userOptions.silent ? noopLogger : createLogger({ level: userOptions.logLevel || 'warn' }));
-  const secret = tokenMod.normalizeSecret(opts.secret || tokenMod.generateSecret());
-  const run = opts.run;
-  const platform = opts.platform;
+  const secret = tokens.normalizeSecret(opts.secret || tokens.generateSecret());
+  const { run, platform } = opts;
   const nowMs = opts.now || (() => Date.now());
 
   const arpCache = createNeighborCache({ ttlMs: opts.arpTtlMs, run, platform, now: nowMs });
+  const limiter = resolveLimiter(opts.rateLimit, nowMs);
+  const audit = resolveAudit(opts.audit, secret);
+  const resolvePolicy = createPolicyResolver(opts.policies);
 
-  // --- network-identity cache (changes rarely; longer TTL) ---------------
-  // `staticIdentity` pins the network identity (skips live gateway/Wi-Fi
-  // probing) — useful for fixed deployments and for deterministic testing.
+  // network-identity cache (rarely changes; longer TTL). staticIdentity pins it.
   const staticIdentity = opts.staticIdentity || null;
   let netCache = { at: 0, identity: null, fp: null };
   let netInflight = null;
-  async function getNetwork(force = false) {
+  async function getNetwork() {
     if (staticIdentity) {
-      if (!netCache.identity) {
-        netCache = { at: nowMs(), identity: staticIdentity, fp: netid.fingerprint(staticIdentity, opts.fingerprintOpts) };
-      }
+      if (!netCache.identity) netCache = { at: nowMs(), identity: staticIdentity, fp: fp.fingerprint(staticIdentity, opts.fingerprintOpts) };
       return netCache;
     }
-    if (!force && netCache.at && nowMs() - netCache.at < opts.netIdentTtlMs) return netCache;
+    if (netCache.at && nowMs() - netCache.at < opts.netIdentTtlMs) return netCache;
     if (netInflight) return netInflight;
-    netInflight = netid
-      .computeNetIdentity({ run, platform, includeWifi: opts.includeWifi })
+    netInflight = fp
+      .computeIdentity({ run, platform, includeWifi: opts.includeWifi })
       .then((identity) => {
-        const fp = netid.fingerprint(identity, opts.fingerprintOpts);
-        netCache = { at: nowMs(), identity, fp };
+        netCache = { at: nowMs(), identity, fp: fp.fingerprint(identity, opts.fingerprintOpts) };
         netInflight = null;
         return netCache;
       })
@@ -85,16 +99,28 @@ function createVerifier(userOptions = {}) {
     return netInflight;
   }
 
-  function issue(ip, mac, net) {
-    return tokenMod.issueToken({ ip, mac, net }, secret, { ttlSeconds: opts.tokenTtlSeconds, now: nowMs });
+  // host own-IP set (refreshed lazily; interface IPs rarely change).
+  // `opts.ownIps` pins the set (fixed deployments / deterministic tests).
+  const ownOverride = opts.ownIps ? new Set([...opts.ownIps].map((x) => normalizeIp(x)).filter(Boolean)) : null;
+  let ownCache = { at: 0, set: new Set() };
+  function ownIps() {
+    if (ownOverride) return ownOverride;
+    if (!ownCache.at || nowMs() - ownCache.at > 5000) ownCache = { at: nowMs(), set: getOwnIps() };
+    return ownCache.set;
   }
 
-  function netInfo(net) {
-    if (!net || !net.identity) return null;
-    return { fingerprint: net.fp ? net.fp.hash : null, label: netid.networkLabel(net.identity) };
+  const issue = (ip, mac, net) =>
+    tokens.issueToken({ ip, mac, net }, secret, { ttlSeconds: opts.tokenTtlSeconds, now: nowMs });
+
+  const netInfo = (net) =>
+    net && net.identity ? { fingerprint: net.fp ? net.fp.hash : null, label: fp.networkLabel(net.identity) } : null;
+
+  function presentFor(allow, reason, via) {
+    if (!allow) return false;
+    return reason === 'arp-verified' || reason === 'loopback' || reason === 'self' || via === 'token';
   }
 
-  function verdict(allow, reason, detail, extra = {}) {
+  function build(allow, reason, detail, extra = {}) {
     return {
       allow,
       reason,
@@ -105,46 +131,85 @@ function createVerifier(userOptions = {}) {
       token: extra.token != null ? extra.token : null,
       network: extra.network != null ? extra.network : null,
       checks: extra.checks || {},
+      present: presentFor(allow, reason, extra.via),
+      retryAfterMs: extra.retryAfterMs || 0,
     };
   }
 
-  async function verify(input = {}) {
+  function eff(overrides, key) {
+    return overrides && overrides[key] !== undefined ? overrides[key] : opts[key];
+  }
+
+  async function verify(input = {}, overrides = {}) {
     const clientIp = normalizeIp(input.ip);
     const token = input.token || null;
+    const resource = input.resource || null;
 
-    if (!clientIp) {
-      return verdict(false, 'no-client-ip', 'could not determine client IP');
+    const finish = (v) => {
+      if (audit) {
+        audit.record({
+          ip: v.ip,
+          mac: v.mac,
+          allow: v.allow,
+          reason: v.reason,
+          via: v.via,
+          resource,
+          net: v.network ? v.network.fingerprint : null,
+          present: v.present,
+        });
+      }
+      return v;
+    };
+
+    if (!clientIp) return finish(build(false, 'no-client-ip', 'could not determine client IP'));
+
+    const denyCidrs = eff(overrides, 'denyCidrs') || [];
+    if (denyCidrs.length && ipInAnyCidr(clientIp, denyCidrs)) {
+      return finish(build(false, 'denied-cidr', 'client IP is in the deny list', { ip: clientIp, via: 'deny' }));
     }
 
-    // 1. explicit deny list
-    if (opts.denyCidrs.length && ipInAnyCidr(clientIp, opts.denyCidrs)) {
-      return verdict(false, 'denied-cidr', 'client IP is in the deny list', { ip: clientIp, via: 'deny' });
+    if (eff(overrides, 'allowLoopback') && isLoopback(clientIp)) {
+      return finish(build(true, 'loopback', 'request from host loopback', { ip: clientIp, via: 'loopback' }));
     }
 
-    // 2. loopback (the host itself)
-    if (opts.allowLoopback && isLoopback(clientIp)) {
-      return verdict(true, 'loopback', 'request originated from host loopback', { ip: clientIp, via: 'loopback' });
+    if (opts.allowSelf && ownIps().has(clientIp)) {
+      return finish(build(true, 'self', 'request from one of the host’s own addresses', { ip: clientIp, via: 'self' }));
     }
 
-    // 3. explicit allow list (administrative bypass of ARP)
-    if (opts.extraAllowCidrs.length && ipInAnyCidr(clientIp, opts.extraAllowCidrs)) {
+    const extraAllow = eff(overrides, 'extraAllowCidrs') || [];
+    if (extraAllow.length && ipInAnyCidr(clientIp, extraAllow)) {
       const net = await getNetwork().catch(() => null);
       const tok = issue(clientIp, null, net && net.fp ? net.fp.hash : null);
-      return verdict(true, 'allowlisted-cidr', 'client IP is in the allow list', {
-        ip: clientIp,
-        via: 'allowlist',
-        token: tok,
-        network: netInfo(net),
-      });
+      return finish(
+        build(true, 'allowlisted-cidr', 'client IP is in the allow list', {
+          ip: clientIp,
+          via: 'allowlist',
+          token: tok,
+          network: netInfo(net),
+        }),
+      );
     }
 
-    // network identity (cached) — needed for token-net compare and approval
+    if (limiter) {
+      const rl = limiter.take(clientIp);
+      if (!rl.allowed) {
+        return finish(
+          build(false, 'rate-limited', 'too many requests from this client', {
+            ip: clientIp,
+            via: 'ratelimit',
+            retryAfterMs: rl.retryAfterMs,
+          }),
+        );
+      }
+    }
+
     const net = await getNetwork().catch(() => null);
     const currentFp = net && net.fp ? net.fp.hash : null;
+    const networkPolicy = eff(overrides, 'network') || {};
 
-    // 4. session-token fast path
+    // token fast path
     if (token) {
-      const tv = tokenMod.verifyToken(token, secret, { now: nowMs });
+      const tv = tokens.verifyToken(token, secret, { now: nowMs });
       if (tv.valid && tv.payload && tv.payload.ip === clientIp) {
         const netMatches = !tv.payload.net || !currentFp || tv.payload.net === currentFp;
         if (netMatches) {
@@ -152,9 +217,8 @@ function createVerifier(userOptions = {}) {
           let mac = tv.payload.mac;
           if (opts.revalidateArpWithToken) {
             const look = await arpCache.lookup(clientIp);
-            if (!look.ok && opts.failClosed) {
-              macOk = false;
-            } else {
+            if (!look.ok && opts.failClosed) macOk = false;
+            else {
               const n = look.neighbor;
               macOk = !!(n && n.unicast && (!tv.payload.mac || n.mac === tv.payload.mac));
               if (n && n.mac) mac = n.mac;
@@ -162,111 +226,110 @@ function createVerifier(userOptions = {}) {
           }
           if (macOk) {
             const nowSec = Math.floor(nowMs() / 1000);
-            const renewed =
-              tv.payload.exp - nowSec < opts.renewWithinSeconds ? issue(clientIp, mac, currentFp || tv.payload.net) : null;
-            return verdict(true, 'token', 'valid bound session token', {
-              ip: clientIp,
-              mac,
-              via: 'token',
-              token: renewed,
-              network: netInfo(net),
-              checks: { token: true },
-            });
+            const renewed = tv.payload.exp - nowSec < opts.renewWithinSeconds ? issue(clientIp, mac, currentFp || tv.payload.net) : null;
+            return finish(
+              build(true, 'token', 'valid bound session token', {
+                ip: clientIp,
+                mac,
+                via: 'token',
+                token: renewed,
+                network: netInfo(net),
+                checks: { token: true },
+              }),
+            );
           }
         }
       }
-      // otherwise fall through to live checks (and re-issue on success)
     }
 
-    // 5. live checks
+    // live checks
     const subnets = (net && net.identity && net.identity.subnets) || getLocalSubnets();
     const inSubnet = ipInAnyCidr(clientIp, subnets);
-
     const look = await arpCache.lookup(clientIp);
     const probeOk = look.ok;
     const neighbor = look.neighbor;
     const arpVerified = !!(neighbor && neighbor.unicast);
-    const arpReason = arpVerified
-      ? 'arp-verified'
-      : neighbor && !neighbor.unicast
-        ? 'incomplete-arp'
-        : 'no-arp-entry';
     const mac = neighbor && neighbor.mac ? neighbor.mac : null;
-
     const checks = { subnet: inSubnet, arp: arpVerified, probeOk };
+    const requireArp = eff(overrides, 'requireArp');
 
-    if (opts.requireArp) {
+    if (requireArp) {
       if (!probeOk && opts.failClosed) {
-        return verdict(false, 'probe-failed', 'could not read the neighbor table (failing closed)', {
-          ip: clientIp,
-          mac,
-          via: 'full-check',
-          network: netInfo(net),
-          checks,
-        });
-      }
-      if (!arpVerified) {
-        const detail =
-          arpReason === 'incomplete-arp'
-            ? 'client IP has only an unresolved/incomplete neighbor entry'
-            : 'no resolved on-segment neighbor exists for the client IP';
-        return verdict(false, arpReason, detail, {
-          ip: clientIp,
-          mac,
-          via: 'full-check',
-          network: netInfo(net),
-          checks,
-        });
-      }
-    } else if (opts.requireSubnet && !inSubnet) {
-      return verdict(false, 'off-subnet', 'client IP is not within any local subnet', {
-        ip: clientIp,
-        mac,
-        via: 'full-check',
-        network: netInfo(net),
-        checks,
-      });
-    }
-
-    // 6. network approval (allow-list of approved networks)
-    if (netid.hasAllowlist(opts.network)) {
-      if (!net || !net.identity) {
-        if (opts.failClosed) {
-          return verdict(false, 'network-unknown', 'could not fingerprint the host network (failing closed)', {
-            ip: clientIp,
-            mac,
-            via: 'full-check',
-            checks,
-          });
-        }
-      } else {
-        const appr = netid.approveNetwork(net.identity, net.fp, opts.network);
-        checks.network = appr.approved;
-        if (!appr.approved) {
-          return verdict(false, 'network-not-approved', 'the host network is not in the approved list', {
+        return finish(
+          build(false, 'probe-failed', 'could not read the neighbor table (failing closed)', {
             ip: clientIp,
             mac,
             via: 'full-check',
             network: netInfo(net),
             checks,
-          });
+          }),
+        );
+      }
+      if (!arpVerified) {
+        const reason = neighbor && !neighbor.unicast ? 'incomplete-arp' : 'no-arp-entry';
+        return finish(
+          build(false, reason, 'no resolved on-segment neighbor for the client IP', {
+            ip: clientIp,
+            mac,
+            via: 'full-check',
+            network: netInfo(net),
+            checks,
+          }),
+        );
+      }
+    } else if (eff(overrides, 'requireSubnet') && !inSubnet) {
+      return finish(
+        build(false, 'off-subnet', 'client IP is not within any local subnet', {
+          ip: clientIp,
+          mac,
+          via: 'full-check',
+          network: netInfo(net),
+          checks,
+        }),
+      );
+    }
+
+    if (fp.hasAllowlist(networkPolicy)) {
+      if (!net || !net.identity) {
+        if (opts.failClosed) {
+          return finish(
+            build(false, 'network-unknown', 'could not fingerprint the host network (failing closed)', {
+              ip: clientIp,
+              mac,
+              via: 'full-check',
+              checks,
+            }),
+          );
+        }
+      } else {
+        const appr = fp.approveNetwork(net.identity, net.fp, networkPolicy);
+        checks.network = appr.approved;
+        if (!appr.approved) {
+          return finish(
+            build(false, 'network-not-approved', 'the host network is not in the approved list', {
+              ip: clientIp,
+              mac,
+              via: 'full-check',
+              network: netInfo(net),
+              checks,
+            }),
+          );
         }
       }
     }
 
-    // 7. success
     const tok = issue(clientIp, mac, currentFp);
-    return verdict(true, arpVerified ? 'arp-verified' : 'subnet-verified', 'client is on the same network segment', {
-      ip: clientIp,
-      mac,
-      via: 'full-check',
-      token: tok,
-      network: netInfo(net),
-      checks,
-    });
+    return finish(
+      build(true, arpVerified ? 'arp-verified' : 'subnet-verified', 'client is on the same network segment', {
+        ip: clientIp,
+        mac,
+        via: 'full-check',
+        token: tok,
+        network: netInfo(net),
+        checks,
+      }),
+    );
   }
-
-  // --- request helpers ----------------------------------------------------
 
   function readToken(req, cookieName, headerName) {
     const h = (req && req.headers) || {};
@@ -288,10 +351,21 @@ function createVerifier(userOptions = {}) {
     return null;
   }
 
+  function requestResource(req) {
+    const host = (req && req.headers && req.headers.host) || '';
+    return `${(req && req.method) || 'GET'} ${host}${(req && req.url) || ''}`.trim();
+  }
+
   async function verifyRequest(req, reqOpts = {}) {
     const ip = extractClientIp(req, { trustForwardedHeader: !!reqOpts.trustForwardedHeader });
     const token = readToken(req, reqOpts.cookieName || 'hereonly', reqOpts.headerName || 'x-hereonly-token');
-    return verify({ ip, token });
+    const resource = reqOpts.resource || requestResource(req);
+    const overrides = resolvePolicy({
+      path: (req && req.url) || '/',
+      host: (req && req.headers && req.headers.host) || '',
+      method: (req && req.method) || 'GET',
+    });
+    return verify({ ip, token, resource }, overrides);
   }
 
   return {
@@ -300,6 +374,8 @@ function createVerifier(userOptions = {}) {
     getNetwork,
     readToken,
     issueToken: issue,
+    audit,
+    limiter,
     options: opts,
     host: os.hostname(),
     _arpCache: arpCache,

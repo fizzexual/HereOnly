@@ -1,8 +1,6 @@
-# Normalize line endings to LF in the repo for all text files.
-# Keeps the codebase consistent across Windows / macOS / Linux contributors.
+# Normalize line endings to LF in the repo across all platforms.
 * text=auto eol=lf
 
-# Treat these as binary (never normalize)
 *.png binary
 *.jpg binary
 *.ico binary

@@ -1,16 +1,10 @@
 'use strict';
 
 /**
- * Wi-Fi SSID / BSSID fingerprinting.
- *
- * This is the *optional* network-identity signal. It is inherently
- * platform-flaky (no Wi-Fi hardware, Wi-Fi service stopped, OS privacy
- * restrictions on reading BSSID) so every path degrades gracefully to `null`.
- * HereOnly never depends on Wi-Fi alone — the default gateway MAC and local
- * subnets cover wired networks.
- *
- * getWifi() returns { ssid, bssid } where either field may be null, or
- * { ssid: null, bssid: null } when no Wi-Fi could be determined.
+ * Wi-Fi SSID / BSSID fingerprinting — the *optional* network-identity signal.
+ * Inherently platform-flaky (no Wi-Fi hardware, service stopped, OS privacy
+ * limits on BSSID), so every path degrades gracefully to null. HereOnly never
+ * depends on Wi-Fi alone — gateway MAC + subnets cover wired networks.
  */
 
 const { run: defaultRun } = require('./exec.js');
@@ -21,19 +15,12 @@ const EMPTY = { ssid: null, bssid: null };
 function cleanSsid(s) {
   if (s == null) return null;
   const t = String(s).trim();
-  if (!t) return null;
-  if (/^(disconnected|not associated)$/i.test(t)) return null;
+  if (!t || /^(disconnected|not associated)$/i.test(t)) return null;
   return t;
 }
 
-// ---------------------------------------------------------------------------
-// Windows: `netsh wlan show interfaces`
-// ---------------------------------------------------------------------------
-//     SSID                   : MyNetwork
-//     BSSID                  : 58:72:c9:41:36:94
 function parseWindowsWlan(text) {
   const s = String(text);
-  // No wireless interface / service stopped -> no Wi-Fi.
   if (/is not running|no wireless interface|no such service/i.test(s)) return { ...EMPTY };
   let ssid = null;
   let bssid = null;
@@ -49,70 +36,43 @@ function parseWindowsWlan(text) {
   return { ssid, bssid };
 }
 
-// ---------------------------------------------------------------------------
-// Linux: `nmcli -t -f active,ssid,bssid dev wifi`
-// ---------------------------------------------------------------------------
-//   yes:MyNetwork:58\:72\:C9\:41\:36\:94
-//   no:OtherNet:AA\:BB\:CC\:DD\:EE\:FF
 function parseNmcli(text) {
   for (const line of String(text).split(/\r?\n/)) {
     if (!line.trim()) continue;
-    // nmcli escapes the ':' inside the BSSID as '\:' — unescape first.
     const unescaped = line.replace(/\\:/g, '%%C%%');
     const fields = unescaped.split(':').map((f) => f.replace(/%%C%%/g, ':'));
-    if (fields[0] === 'yes') {
-      return { ssid: cleanSsid(fields[1]), bssid: normalizeMac(fields[2] || '') };
-    }
+    if (fields[0] === 'yes') return { ssid: cleanSsid(fields[1]), bssid: normalizeMac(fields[2] || '') };
   }
   return { ...EMPTY };
 }
 
-// Linux fallback: `iwgetid -r` (SSID) and `iwgetid -a` (BSSID).
 function parseIwgetidSsid(text) {
   return cleanSsid(text);
 }
 function parseIwgetidApMac(text) {
-  // "wlan0     Access Point/Cell: 58:72:C9:41:36:94"
   const m = String(text).match(/([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})/);
   return m ? normalizeMac(m[1]) : null;
 }
 
-// ---------------------------------------------------------------------------
-// macOS: `networksetup -getairportnetwork en0`
-// ---------------------------------------------------------------------------
-//   Current Wi-Fi Network: MyNetwork
-//   (or) You are not associated with an AirPort network.
 function parseNetworksetup(text) {
-  const s = String(text);
-  const m = s.match(/Current Wi-?Fi Network:\s*(.+?)\s*$/im);
-  if (m) return { ssid: cleanSsid(m[1]), bssid: null };
-  return { ...EMPTY };
+  const m = String(text).match(/Current Wi-?Fi Network:\s*(.+?)\s*$/im);
+  return m ? { ssid: cleanSsid(m[1]), bssid: null } : { ...EMPTY };
 }
 
-// macOS legacy airport -I: "         SSID: MyNetwork" / "        BSSID: 58:72:c9:..."
 function parseAirport(text) {
   const s = String(text);
-  let ssid = null;
-  let bssid = null;
   const sm = s.match(/^\s*SSID:\s*(.+?)\s*$/im);
-  if (sm) ssid = cleanSsid(sm[1]);
   const bm = s.match(/^\s*BSSID:\s*([0-9a-fA-F:.-]+)\s*$/im);
-  if (bm) bssid = normalizeMac(bm[1]);
-  return { ssid, bssid };
+  return { ssid: sm ? cleanSsid(sm[1]) : null, bssid: bm ? normalizeMac(bm[1]) : null };
 }
 
 const AIRPORT_BIN =
   '/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport';
 
-/**
- * Determine current Wi-Fi SSID/BSSID, best-effort.
- * @returns {Promise<{ ssid: string|null, bssid: string|null }>}
- */
 async function getWifi({ run = defaultRun, platform = process.platform } = {}) {
   try {
     if (platform === 'win32') {
       const r = await run('netsh', ['wlan', 'show', 'interfaces']);
-      // netsh returns non-zero when the service is stopped; still parse stdout.
       return parseWindowsWlan((r.stdout || '') + (r.stderr || ''));
     }
     if (platform === 'linux') {
@@ -123,9 +83,7 @@ async function getWifi({ run = defaultRun, platform = process.platform } = {}) {
       }
       const s = await run('iwgetid', ['-r']);
       const a = await run('iwgetid', ['-a']);
-      const ssid = s.ok ? parseIwgetidSsid(s.stdout) : null;
-      const bssid = a.ok ? parseIwgetidApMac(a.stdout) : null;
-      return { ssid, bssid };
+      return { ssid: s.ok ? parseIwgetidSsid(s.stdout) : null, bssid: a.ok ? parseIwgetidApMac(a.stdout) : null };
     }
     if (platform === 'darwin') {
       const air = await run(AIRPORT_BIN, ['-I']);

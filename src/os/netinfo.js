@@ -1,21 +1,19 @@
 'use strict';
 
 /**
- * Host network information: interfaces, local subnets, and the default gateway.
+ * Host network info: interfaces, local subnets, default gateway (+ its MAC).
  *
- * Interface/subnet data comes from `os.networkInterfaces()` — pure Node, no
- * shelling, always available. The default gateway is parsed per-platform; the
- * gateway's MAC (looked up in the neighbor table) is HereOnly's strongest
- * always-available network-identity signal, since it is present even on wired
+ * Interface/subnet data comes from os.networkInterfaces() — pure Node, always
+ * available. The gateway MAC (resolved from the neighbor table) is HereOnly's
+ * strongest always-available network-identity signal, present even on wired
  * networks with no Wi-Fi SSID.
  */
 
 const os = require('node:os');
 const { run: defaultRun } = require('./exec.js');
 const { normalizeIp, normalizeMac, parseCidr } = require('../core/ip.js');
-const { lookupNeighbor } = require('./arp.js');
+const { lookupNeighbor } = require('./neighbors.js');
 
-/** Normalize Node's family field ('IPv4'/'IPv6' or 4/6) to 4/6. */
 function famNum(family) {
   if (family === 4 || family === 6) return family;
   if (family === 'IPv4') return 4;
@@ -23,11 +21,9 @@ function famNum(family) {
   return 0;
 }
 
-/** All interface addresses, normalized. */
 function getInterfaces() {
   const out = [];
-  const ifaces = os.networkInterfaces();
-  for (const [name, addrs] of Object.entries(ifaces)) {
+  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
     for (const a of addrs || []) {
       out.push({
         name,
@@ -43,19 +39,14 @@ function getInterfaces() {
   return out;
 }
 
-/** True for 169.254.0.0/16 (APIPA) or fe80::/10 link-local. */
 function isLinkLocalAddr(address) {
   if (!address) return false;
-  if (address.startsWith('169.254.')) return true;
-  if (address.toLowerCase().startsWith('fe80:')) return true;
-  return false;
+  return address.startsWith('169.254.') || address.toLowerCase().startsWith('fe80:');
 }
 
-/** Format a 128-bit BigInt as a compressed IPv6 string. */
 function bigIntToIPv6(value) {
   const groups = [];
   for (let i = 7; i >= 0; i--) groups.push(Number((value >> BigInt(i * 16)) & 0xffffn).toString(16));
-  // Compress the longest run (length >= 2) of zero groups into "::".
   let bestStart = -1;
   let bestLen = 0;
   let curStart = -1;
@@ -74,18 +65,12 @@ function bigIntToIPv6(value) {
     }
   }
   if (bestLen > 1) {
-    const head = groups.slice(0, bestStart).join(':');
-    const tail = groups.slice(bestStart + bestLen).join(':');
-    return `${head}::${tail}`;
+    return `${groups.slice(0, bestStart).join(':')}::${groups.slice(bestStart + bestLen).join(':')}`;
   }
   return groups.join(':');
 }
 
-/**
- * Zero the host bits of a CIDR for a stable canonical form. Critical for IPv6:
- * SLAAC privacy extensions rotate the host portion, so the network fingerprint
- * must key on the network prefix only, not the full (changing) address.
- */
+/** Zero host bits for a stable canonical CIDR (critical for IPv6 SLAAC churn). */
 function canonicalizeCidr(cidr) {
   const c = parseCidr(cidr);
   if (!c) return cidr;
@@ -99,16 +84,6 @@ function canonicalizeCidr(cidr) {
   return `${bigIntToIPv6(net)}/${c.prefix}`;
 }
 
-/**
- * Local subnets as CIDR strings, suitable for membership testing.
- *
- * Single-host routes (/32 v4, /128 v6) are excluded by default: they have no
- * on-segment peers, so they can't define a "same subnet" relationship. This
- * also naturally drops mesh-VPN addresses like Tailscale's 100.x/32, which is
- * correct — HereOnly gates the *physical* segment, not an overlay.
- *
- * @param {{ includeInternal?: boolean, includeLinkLocal?: boolean, includeHostRoutes?: boolean }} [opts]
- */
 function getLocalSubnets(opts = {}) {
   const { includeInternal = false, includeLinkLocal = false, includeHostRoutes = false } = opts;
   const seen = new Set();
@@ -119,7 +94,7 @@ function getLocalSubnets(opts = {}) {
     if (isLinkLocalAddr(i.address) && !includeLinkLocal) continue;
     const c = parseCidr(i.cidr);
     if (!c) continue;
-    if (c.prefix === c.bits && !includeHostRoutes) continue; // skip /32, /128
+    if (c.prefix === c.bits && !includeHostRoutes) continue; // skip /32, /128 (incl. mesh VPNs)
     const canon = canonicalizeCidr(i.cidr);
     if (seen.has(canon)) continue;
     seen.add(canon);
@@ -128,43 +103,28 @@ function getLocalSubnets(opts = {}) {
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// Default gateway
-// ---------------------------------------------------------------------------
-
-// Windows: `route print -4` -> Active Routes; the default route has
-// destination 0.0.0.0 and netmask 0.0.0.0. Choose the lowest metric.
 function parseWindowsGateway(text) {
   let best = null;
   for (const line of String(text).split(/\r?\n/)) {
-    const m = line.match(
-      /^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+([\d.]+)\s+([\d.]+)\s+(\d+)/,
-    );
+    const m = line.match(/^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+([\d.]+)\s+([\d.]+)\s+(\d+)/);
     if (!m) continue;
-    const gateway = m[1];
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(m[1])) continue; // skip "On-link"
     const metric = Number(m[3]);
-    if (!/^\d+\.\d+\.\d+\.\d+$/.test(gateway)) continue; // skip "On-link"
-    if (!best || metric < best.metric) best = { gateway, ifaceAddr: m[2], metric };
+    if (!best || metric < best.metric) best = { gateway: m[1], metric };
   }
   return best ? best.gateway : null;
 }
 
-// Linux: `ip route show default` -> "default via 192.168.1.1 dev eth0 ..."
 function parseLinuxGateway(text) {
   const m = String(text).match(/default\s+via\s+([\da-fA-F:.]+)/);
   return m ? normalizeIp(m[1]) : null;
 }
 
-// macOS: `route -n get default` -> a line "    gateway: 192.168.1.1"
 function parseMacGateway(text) {
   const m = String(text).match(/gateway:\s*([\da-fA-F:.]+)/);
   return m ? normalizeIp(m[1]) : null;
 }
 
-/**
- * Determine the default-gateway IP.
- * @returns {Promise<string|null>}
- */
 async function getDefaultGateway({ run = defaultRun, platform = process.platform } = {}) {
   if (platform === 'win32') {
     const r = await run('route', ['print', '-4']);
@@ -181,10 +141,6 @@ async function getDefaultGateway({ run = defaultRun, platform = process.platform
   return null;
 }
 
-/**
- * Resolve the default gateway and its MAC.
- * @returns {Promise<{ ip: string|null, mac: string|null }>}
- */
 async function getGateway(opts = {}) {
   const ip = await getDefaultGateway(opts);
   if (!ip) return { ip: null, mac: null };
@@ -200,7 +156,7 @@ module.exports = {
   canonicalizeCidr,
   isLinkLocalAddr,
   famNum,
-  // parsers for tests
+  bigIntToIPv6,
   parseWindowsGateway,
   parseLinuxGateway,
   parseMacGateway,

@@ -3,19 +3,16 @@
 /**
  * TTL cache over the neighbor table.
  *
- * Shelling out to read the ARP/NDP table on every HTTP request would be slow,
- * so we cache the parsed table for a short TTL. Two refinements matter for
- * correctness:
- *
- *  - Concurrent refreshes are coalesced into a single in-flight read.
- *  - On a cache *miss* for a not-just-refreshed table we refresh once and
- *    retry, because a client that connected microseconds ago is already in the
- *    OS table (the kernel resolved it to complete the TCP handshake) but may
- *    not yet be in our cached snapshot. This avoids a brief false-deny window
- *    without re-reading the table on every lookup.
+ * Reading the ARP/NDP table on every request would be slow, so we cache the
+ * parsed table briefly. Concurrent refreshes coalesce into a single read; and
+ * on a cache *miss* for a not-just-refreshed table we refresh once and retry,
+ * because a client that connected microseconds ago is already in the OS table
+ * (the kernel resolved it to complete the TCP handshake) but may not yet be in
+ * our snapshot — closing a brief false-deny window without re-reading every
+ * lookup. Fails closed: a failed read yields an empty, not-ok snapshot.
  */
 
-const { readNeighbors } = require('../os/arp.js');
+const { readNeighbors } = require('../os/neighbors.js');
 const { normalizeIp } = require('./ip.js');
 
 function createNeighborCache(opts = {}) {
@@ -23,8 +20,7 @@ function createNeighborCache(opts = {}) {
   const minRefreshMs = opts.minRefreshMs != null ? opts.minRefreshMs : 250;
   const refreshOnMiss = opts.refreshOnMiss !== false;
   const now = opts.now || (() => Date.now());
-  const run = opts.run;
-  const platform = opts.platform;
+  const { run, platform } = opts;
 
   let cache = { at: 0, neighbors: [], source: null, ok: false };
   let inflight = null;
@@ -41,7 +37,6 @@ function createNeighborCache(opts = {}) {
       })
       .catch((err) => {
         inflight = null;
-        // Fail closed: record an empty, not-ok snapshot.
         cache = { at: now(), neighbors: [], source: 'error', ok: false, error: err };
         return cache;
       });
@@ -53,19 +48,15 @@ function createNeighborCache(opts = {}) {
     return cache;
   }
 
-  function find(neighbors, target) {
-    return target ? neighbors.find((n) => n.ip === target) || null : null;
-  }
+  const find = (neighbors, target) => (target ? neighbors.find((n) => n.ip === target) || null : null);
 
   async function lookup(ip) {
     stats.reads++;
     const target = normalizeIp(ip);
     if (!target) return { neighbor: null, source: cache.source, ok: cache.ok, cachedAt: cache.at };
-
     let c = await ensureFresh();
     let neighbor = find(c.neighbors, target);
     if (neighbor) stats.hits++;
-
     if (!neighbor && refreshOnMiss && c.ok && now() - c.at >= minRefreshMs) {
       stats.missRefreshes++;
       c = await refresh();
@@ -74,13 +65,7 @@ function createNeighborCache(opts = {}) {
     return { neighbor, source: c.source, ok: c.ok, cachedAt: c.at };
   }
 
-  return {
-    lookup,
-    refresh,
-    ensureFresh,
-    snapshot: () => ({ ...cache }),
-    stats,
-  };
+  return { lookup, refresh, ensureFresh, snapshot: () => ({ ...cache }), stats };
 }
 
 module.exports = { createNeighborCache };

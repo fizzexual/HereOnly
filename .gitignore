@@ -1,26 +1,26 @@
 # Dependencies
 node_modules/
-npm-debug.log*
-yarn-error.log*
 package-lock.json
+npm-debug.log*
 
-# Secrets & runtime state — NEVER commit these
-.env
-.env.*
+# Runtime state & secrets — NEVER commit
+.hereonly/
+*.secret
+hereonly.secret
 *.pem
 *.key
-.hereonly/
-hereonly.secret
-*.secret
+.env
+.env.*
 
-# Logs
+# Audit logs (may contain MAC/IP of local devices)
+*.audit.log
+audit.log
+
+# Logs / coverage
 logs/
 *.log
-
-# Test / coverage output
 coverage/
 .nyc_output/
-*.lcov
 
 # OS / editor cruft
 .DS_Store

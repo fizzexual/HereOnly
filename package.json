@@ -1,18 +1,28 @@
 {
   "name": "hereonly",
-  "version": "0.1.0",
-  "description": "Subnet-locked access control for local web servers. ARP-verified, network-fingerprinted, session-bound. Only devices on the same physical network segment can reach your site — even if the host is reachable from outside.",
+  "version": "0.2.0",
+  "description": "Make your LAN a vault. Agent-less, zero-install access control that gates local services to the physical network segment — verified by ARP/NDP adjacency, MAC-pinned session tokens, and segment fingerprinting, with a tamper-evident physical-access audit log. Use it as middleware, a reverse proxy, or forward-auth for nginx/Caddy/Traefik. No agent, no cloud, no IdP.",
   "keywords": [
     "access-control",
     "arp",
+    "ndp",
     "subnet",
     "lan",
-    "localhost",
-    "security",
+    "l2",
+    "physical-presence",
+    "segment",
+    "network-fingerprint",
+    "mac-binding",
+    "audit-log",
+    "forward-auth",
+    "nginx",
+    "caddy",
+    "traefik",
     "middleware",
     "reverse-proxy",
-    "network-fingerprint",
-    "zero-trust"
+    "zero-trust",
+    "air-gapped",
+    "homelab"
   ],
   "license": "MIT",
   "author": "Fizzexual",
@@ -27,8 +37,9 @@
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./middleware": "./src/middleware/express.js",
-    "./proxy": "./src/proxy/server.js",
+    "./middleware": "./src/server/middleware.js",
+    "./proxy": "./src/server/proxy.js",
+    "./auth": "./src/server/authserver.js",
     "./config": "./src/config.js",
     "./package.json": "./package.json"
   },
@@ -38,6 +49,7 @@
   "files": [
     "src/",
     "bin/",
+    "integrations/",
     "README.md",
     "LICENSE"
   ],
@@ -45,8 +57,8 @@
     "test": "node --test \"test/**/*.test.js\"",
     "test:unit": "node --test \"test/unit/**/*.test.js\"",
     "test:integration": "node --test \"test/integration/**/*.test.js\"",
-    "start": "node bin/hereonly.js",
-    "demo": "node examples/demo-server.js"
+    "doctor": "node bin/hereonly.js doctor",
+    "status": "node bin/hereonly.js status"
   },
   "engines": {
     "node": ">=18.17.0"
