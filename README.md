@@ -14,8 +14,8 @@ network fingerprint, and pinned to a session token tied to the device's MAC.
 > accidentally exposed to the public internet.
 
 ```bash
-# Put HereOnly in front of any local server, in any language:
-npx hereonly proxy --target http://127.0.0.1:3000 --port 7000
+# Put HereOnly in front of any local server, in any language (no install):
+npx github:fizzexual/HereOnly proxy --target http://127.0.0.1:3000 --port 7000
 #   :7000  ->  reachable only by on-segment devices
 #   :3000  ->  your raw app (bind it to localhost)
 ```
@@ -67,11 +67,16 @@ never a spoofable `X-Forwarded-For`.
 
 ## Install
 
+Not on the npm registry yet — install straight from GitHub:
+
 ```bash
-npm install hereonly        # library + middleware + proxy
-# or run the proxy without installing:
-npx hereonly proxy --target http://127.0.0.1:3000
+npm install github:fizzexual/HereOnly      # as a dependency
+npm install -g github:fizzexual/HereOnly   # for the `hereonly` CLI
+# …or run it with no install at all:
+npx github:fizzexual/HereOnly proxy --target http://127.0.0.1:3000
 ```
+
+Once published this becomes `npm install hereonly` / `npx hereonly`.
 
 Requires Node ≥ 18.17. No runtime dependencies.
 
