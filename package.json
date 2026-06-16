@@ -1,0 +1,49 @@
+{
+  "name": "hereonly",
+  "version": "0.1.0",
+  "description": "Subnet-locked access control for local web servers. ARP-verified, network-fingerprinted, session-bound. Only devices on the same physical network segment can reach your site — even if the host is reachable from outside.",
+  "keywords": [
+    "access-control",
+    "arp",
+    "subnet",
+    "lan",
+    "localhost",
+    "security",
+    "middleware",
+    "reverse-proxy",
+    "network-fingerprint",
+    "zero-trust"
+  ],
+  "license": "MIT",
+  "author": "Fizzexual",
+  "homepage": "https://github.com/fizzexual/HereOnly",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fizzexual/HereOnly.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fizzexual/HereOnly/issues"
+  },
+  "main": "src/index.js",
+  "bin": {
+    "hereonly": "bin/hereonly.js"
+  },
+  "files": [
+    "src/",
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "test:unit": "node --test test/unit/",
+    "test:integration": "node --test test/integration/",
+    "start": "node bin/hereonly.js",
+    "demo": "node examples/demo-server.js"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
