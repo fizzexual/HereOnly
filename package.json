@@ -25,6 +25,13 @@
     "url": "https://github.com/fizzexual/HereOnly/issues"
   },
   "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./middleware": "./src/middleware/express.js",
+    "./proxy": "./src/proxy/server.js",
+    "./config": "./src/config.js",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "hereonly": "bin/hereonly.js"
   },
@@ -35,7 +42,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test",
+    "test": "node --test \"test/**/*.test.js\"",
     "test:unit": "node --test \"test/unit/**/*.test.js\"",
     "test:integration": "node --test \"test/integration/**/*.test.js\"",
     "start": "node bin/hereonly.js",
