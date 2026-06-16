@@ -9,6 +9,7 @@ const { createVerifier, DEFAULTS } = require('./core/verifier.js');
 const { hereonly } = require('./server/middleware.js');
 const { createProxyServer } = require('./server/proxy.js');
 const { createAuthServer } = require('./server/authserver.js');
+const { createHub } = require('./hub');
 const { createAudit, loadAuditFile } = require('./core/audit.js');
 const { createRateLimiter } = require('./core/ratelimit.js');
 const { createPolicyResolver } = require('./core/policy.js');
@@ -28,6 +29,7 @@ module.exports = {
   middleware: hereonly,
   createProxyServer,
   createAuthServer,
+  createHub,
 
   // audit, rate limiting, policy
   createAudit,

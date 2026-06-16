@@ -16,6 +16,7 @@ const path = require('node:path');
 const { createVerifier } = require('../src/core/verifier.js');
 const { createProxyServer } = require('../src/server/proxy.js');
 const { createAuthServer } = require('../src/server/authserver.js');
+const { createHub } = require('../src/hub');
 const { createAudit, loadAuditFile } = require('../src/core/audit.js');
 const fp = require('../src/core/fingerprint.js');
 const { getOwnIps } = require('../src/os/self.js');
@@ -252,6 +253,34 @@ function cmdAudit(args, fileCfg) {
   }
 }
 
+async function cmdHub(args, fileCfg) {
+  const port = Number(args.port || fileCfg.port || 7080);
+  const host = args.host || fileCfg.host || '0.0.0.0';
+  const opts = buildOptions(args, fileCfg);
+  const verifier = createVerifier(opts);
+  const hub = createHub({
+    verifier,
+    name: args.name || fileCfg.name,
+    port,
+    scan: args.scan === false ? false : fileCfg.scan !== false,
+    services: toArray(args.service).concat(fileCfg.services || []),
+    hubSecret: args['hub-secret'] || fileCfg.hubSecret || process.env.HEREONLY_HUB_SECRET || null,
+    group: args.group || fileCfg.group,
+    mcastPort: args['mcast-port'] ? Number(args['mcast-port']) : fileCfg.mcastPort,
+    logLevel: opts.logLevel,
+    trustForwardedHeader: !!args['trust-forwarded'],
+  });
+  await hub.start(port, host);
+  const svc = hub.self.services();
+  console.log(`\n  HereOnly v${pkg.version}  -  segment hub`);
+  console.log('  ' + '-'.repeat(48));
+  console.log(`  dashboard : http://${host}:${port}   (open from any on-segment device)`);
+  console.log(`  this host : ${hub.self.host}  ${hub.ownAddrs().join(', ')}`);
+  console.log(`  services  : ${svc.length ? svc.map((s) => s.name + ':' + s.port).join(', ') : '(none detected; advertise with --service name=port)'}`);
+  console.log(`  discovery : multicast, segment-scoped (TTL 1)${args['hub-secret'] || process.env.HEREONLY_HUB_SECRET ? ', signed' : ''}`);
+  console.log('  Peers running `hereonly hub` on this segment appear automatically.\n');
+}
+
 function printHelp() {
   console.log(`HereOnly v${pkg.version} - make your LAN a vault
 
@@ -261,6 +290,8 @@ USAGE
 COMMANDS
   proxy        Reverse proxy that gates a local server to this segment
   auth         Forward-auth server for nginx / Caddy / Traefik
+  hub          Zero-config directory: auto-discover every device + service on
+               this segment and show them to every on-segment device
   doctor       Print network identity + sample verifications
   status       Dashboard: identity, policy, and audit summary
   check <ip>   Verify a single IP (exit 0=allow, 1=deny)
@@ -282,11 +313,17 @@ COMMON OPTIONS
       --log-level <lvl>     silent|error|warn|info|debug
   -c, --config <path>       load options from a JSON config file
 
+HUB OPTIONS
+      --service <name=port> advertise a service (repeatable)
+      --no-scan             don't auto-detect this host's listening HTTP ports
+      --hub-secret <s>      only machines sharing this secret form the hub
+      --name <label>        display name for this machine
+
 EXAMPLES
+  hereonly hub                                  # open http://<this-host>:7080
+  hereonly hub --service grafana=3000 --service nas=5000
   hereonly proxy -t http://127.0.0.1:3000 -p 7000 --audit --sign-audit
   hereonly auth -p 7001 --allow-ssid HomeNet
-  hereonly status
-  hereonly audit --denies --tail 20
 `);
 }
 
@@ -304,6 +341,8 @@ async function main() {
       return cmdProxy(args, fileCfg);
     case 'auth':
       return cmdAuth(args, fileCfg);
+    case 'hub':
+      return cmdHub(args, fileCfg);
     case 'doctor':
       return cmdDoctor(args, fileCfg);
     case 'status':

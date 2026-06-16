@@ -84,6 +84,30 @@ Requires Node ≥ 18.17. Zero runtime dependencies.
 
 ## Usage
 
+### Segment hub — start it, see every service on the LAN
+
+```bash
+hereonly hub        # then open http://<this-host>:7080 from any on-segment device
+```
+
+Run `hereonly hub` on one or more machines. They **auto-discover each other over
+the LAN** (UDP multicast, TTL 1 — so it never leaves the segment), each
+advertises its hostname and the HTTP services it runs (auto-detected from its own
+listening ports, plus anything you name with `--service grafana=3000`), and every
+on-segment device gets **one gated page listing every machine and service**, with
+a direct link and a click-through proxy for each.
+
+No accounts, no coordination server, no config — discovery rides the segment
+itself, and the directory page is gated by the same ARP/NDP check, so only
+on-segment devices can even load it. It's the easy, "everything just shows up"
+experience of a mesh VPN, scoped to the one network you're physically on.
+
+```bash
+hereonly hub --service nas=5000 --service jellyfin=8096   # name extra services
+hereonly hub --hub-secret s3cret                          # private hub (shared secret)
+hereonly hub --no-scan                                    # advertise only named services
+```
+
 ### Reverse proxy (any language)
 
 ```bash
@@ -148,6 +172,7 @@ entry — or splice the log across restarts — without breaking verification.
 ```
 hereonly proxy   --target <url> [--port 7000]      gate a local server
 hereonly auth    [--port 7001]                     forward-auth for a reverse proxy
+hereonly hub     [--port 7080] [--service n=port]  zero-config LAN service directory
 hereonly doctor                                    network identity + sample checks
 hereonly status                                    dashboard + audit summary
 hereonly check   <ip>                              verify one IP (exit 0/1)
@@ -205,7 +230,7 @@ Wi-Fi is optional everywhere; wired hosts fingerprint on gateway MAC + subnets.
 ## Development
 
 ```bash
-npm test                 # 61 unit + integration tests (Node's built-in runner)
+npm test                 # 70 unit + integration tests (Node's built-in runner)
 node bin/hereonly.js doctor
 ```
 
