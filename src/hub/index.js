@@ -29,9 +29,10 @@ function createHub(options = {}) {
   const verifier = options.verifier || createVerifier(options);
   const logger = options.logger || (options.silent ? noopLogger : createLogger({ level: options.logLevel || 'info' }));
   const hostname = os.hostname();
+  const addrOpts = { range: options.addrRange, secret: options.hubSecret };
   const ident = options.id
-    ? { id: options.id, name: options.name || hostname, addr: addrFromId(options.id) }
-    : loadOrCreateIdentity(options.idFile, hostname, options.name);
+    ? { id: options.id, name: options.name || hostname, addr: addrFromId(options.id, addrOpts) }
+    : loadOrCreateIdentity(options.idFile, hostname, options.name, addrOpts);
   const id = ident.id;
   const host = hostname;
   const hubPort = options.port || 7080;

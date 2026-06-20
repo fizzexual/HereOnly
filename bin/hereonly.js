@@ -265,6 +265,7 @@ async function cmdHub(args, fileCfg) {
     scan: args.scan === false ? false : fileCfg.scan !== false,
     services: toArray(args.service).concat(fileCfg.services || []),
     hubSecret: args['hub-secret'] || fileCfg.hubSecret || process.env.HEREONLY_HUB_SECRET || null,
+    addrRange: args['addr-range'] || fileCfg.addrRange,
     group: args.group || fileCfg.group,
     mcastPort: args['mcast-port'] ? Number(args['mcast-port']) : fileCfg.mcastPort,
     logLevel: opts.logLevel,
@@ -275,7 +276,7 @@ async function cmdHub(args, fileCfg) {
   console.log(`\n  HereOnly v${pkg.version}  -  segment hub`);
   console.log('  ' + '-'.repeat(48));
   console.log(`  dashboard : http://${host}:${port}   (open from any on-segment device)`);
-  console.log(`  identity  : ${hub.identity.name}  ->  ${hub.identity.addr}   (stable HereOnly address)`);
+  console.log(`  identity  : ${hub.identity.name}  ->  ${hub.identity.addr}   (stable, in ${hub.identity.range})`);
   console.log(`  this host : ${hub.self.host}  ${hub.ownAddrs().join(', ')}`);
   console.log(`  services  : ${svc.length ? svc.map((s) => s.name + ':' + s.port).join(', ') : '(none detected; advertise with --service name=port)'}`);
   console.log(`  discovery : multicast, segment-scoped (TTL 1)${args['hub-secret'] || process.env.HEREONLY_HUB_SECRET ? ', signed' : ''}`);
@@ -319,6 +320,9 @@ HUB OPTIONS
       --no-scan             don't auto-detect this host's listening HTTP ports
       --hub-secret <s>      only machines sharing this secret form the hub
       --name <label>        display name for this machine
+      --addr-range <r>      device address space: class-e (default, 240.0.0.0/8),
+                            cgnat (100.64.0.0/10), ula (secret-derived fd..::/48),
+                            or a custom CIDR. ula needs --hub-secret to stay private
 
 EXAMPLES
   hereonly hub                                  # open http://<this-host>:7080

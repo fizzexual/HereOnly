@@ -102,14 +102,24 @@ itself, and the directory page is gated by the same ARP/NDP check, so only
 on-segment devices can even load it. It's the easy, "everything just shows up"
 experience of a mesh VPN, scoped to the one network you're physically on.
 
-**Stable `100.x` addresses.** Each machine also gets a persistent HereOnly name
-and a stable address in the `100.64.0.0/10` range (the same space Tailscale
-uses), derived from a saved id so it survives reboots and DHCP changes. Reach any
-device through the hub by name or by its `100.x` — `http://<hub>:7080/go/beta/3000/`
-or `…/go/100.121.5.55/3000/`. No overlay and no network reconfig: the hub routes
-these names/addresses to the right peer. (To type a `100.x` *directly* into a
-browser instead of through the hub, an opt-in interface-alias mode is available —
-it needs admin, since it adds a real IP to your NIC.)
+**Stable private addresses.** Each machine also gets a persistent HereOnly name
+and a stable IP derived from a saved id, so it survives reboots and DHCP changes.
+The address space is configurable (`--addr-range`) and defaults to the reserved
+`240.0.0.0/8` block — never routed on the public internet and collision-free with
+normal LANs (and with Tailscale's `100.x`):
+
+- `class-e` *(default)* — `240.x.y.z`, reserved / private
+- `cgnat` — `100.64.0.0/10`, Tailscale-style
+- `ula` — an IPv6 `fd…::/48` whose prefix is derived from your `--hub-secret`, so
+  the address space itself is **unguessable without the secret** — a private world
+  nothing outside knows about
+- any custom CIDR, e.g. `--addr-range 10.77.0.0/16`
+
+Reach any device through the hub by name or address —
+`http://<hub>:7080/go/beta/3000/` or `…/go/240.233.101.239/3000/`. No overlay, no
+network reconfig: the hub routes to the right peer. (Typing the address *directly*
+into a browser, bypassing the hub, needs the opt-in interface-alias mode — admin
+only, since it adds a real IP to the NIC.)
 
 ```bash
 hereonly hub --service nas=5000 --service jellyfin=8096   # name extra services
@@ -239,7 +249,7 @@ Wi-Fi is optional everywhere; wired hosts fingerprint on gateway MAC + subnets.
 ## Development
 
 ```bash
-npm test                 # 70 unit + integration tests (Node's built-in runner)
+npm test                 # 75 unit + integration tests (Node's built-in runner)
 node bin/hereonly.js doctor
 ```
 
