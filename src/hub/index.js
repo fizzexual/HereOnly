@@ -9,7 +9,8 @@
  */
 
 const os = require('node:os');
-const { createDiscovery, newId } = require('./discovery.js');
+const { createDiscovery } = require('./discovery.js');
+const { loadOrCreateIdentity, addrFromId } = require('./identity.js');
 const { createHubServer } = require('./server.js');
 const services = require('./services.js');
 const { createVerifier } = require('../core/verifier.js');
@@ -27,8 +28,12 @@ function ownLanAddrs() {
 function createHub(options = {}) {
   const verifier = options.verifier || createVerifier(options);
   const logger = options.logger || (options.silent ? noopLogger : createLogger({ level: options.logLevel || 'info' }));
-  const id = options.id || newId();
-  const host = options.name || os.hostname();
+  const hostname = os.hostname();
+  const ident = options.id
+    ? { id: options.id, name: options.name || hostname, addr: addrFromId(options.id) }
+    : loadOrCreateIdentity(options.idFile, hostname, options.name);
+  const id = ident.id;
+  const host = hostname;
   const hubPort = options.port || 7080;
   const mcastPort = options.mcastPort || undefined;
   const scan = options.scan !== false;
@@ -56,6 +61,8 @@ function createHub(options = {}) {
   const self = {
     id,
     host,
+    name: ident.name,
+    addr: ident.addr,
     get addrs() {
       return addrsCache;
     },
@@ -73,7 +80,7 @@ function createHub(options = {}) {
   });
 
   function entries() {
-    const selfEntry = { id, host, addrs: addrsCache, services: serviceCache, self: true, lastSeen: Date.now() };
+    const selfEntry = { id, host, name: ident.name, addr: ident.addr, addrs: addrsCache, services: serviceCache, self: true, lastSeen: Date.now() };
     return [selfEntry, ...discovery.peers().map((p) => ({ ...p, self: false }))];
   }
 
@@ -116,7 +123,7 @@ function createHub(options = {}) {
     }
   }
 
-  return { start, stop, server, discovery, entries, refreshServices, id, self, ownAddrs: () => addrsCache };
+  return { start, stop, server, discovery, entries, refreshServices, id, self, identity: ident, ownAddrs: () => addrsCache };
 }
 
 module.exports = { createHub, ownLanAddrs };

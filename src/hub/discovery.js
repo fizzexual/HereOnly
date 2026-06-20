@@ -72,6 +72,8 @@ function createPeerTable(opts = {}) {
     peers.set(announce.id, {
       id: announce.id,
       host: announce.host || fromAddr || announce.id,
+      name: announce.name || announce.host || announce.id,
+      addr: announce.addr || null,
       addrs: Array.isArray(announce.addrs) && announce.addrs.length ? announce.addrs : fromAddr ? [fromAddr] : [],
       services: Array.isArray(announce.services) ? announce.services : [],
       from: fromAddr || null,
@@ -128,7 +130,17 @@ function createDiscovery(opts = {}) {
   }
 
   const announce = () =>
-    send({ t: 'announce', v: 1, id: self.id, host: self.host, addrs: self.addrs || [], services: servicesNow(), ttlMs });
+    send({
+      t: 'announce',
+      v: 1,
+      id: self.id,
+      host: self.host,
+      name: self.name || self.host,
+      addr: self.addr || null,
+      addrs: self.addrs || [],
+      services: servicesNow(),
+      ttlMs,
+    });
   const query = () => send({ t: 'query', v: 1, id: self.id });
 
   function onMessage(buf, rinfo) {

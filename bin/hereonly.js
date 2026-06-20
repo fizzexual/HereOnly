@@ -275,6 +275,7 @@ async function cmdHub(args, fileCfg) {
   console.log(`\n  HereOnly v${pkg.version}  -  segment hub`);
   console.log('  ' + '-'.repeat(48));
   console.log(`  dashboard : http://${host}:${port}   (open from any on-segment device)`);
+  console.log(`  identity  : ${hub.identity.name}  ->  ${hub.identity.addr}   (stable HereOnly address)`);
   console.log(`  this host : ${hub.self.host}  ${hub.ownAddrs().join(', ')}`);
   console.log(`  services  : ${svc.length ? svc.map((s) => s.name + ':' + s.port).join(', ') : '(none detected; advertise with --service name=port)'}`);
   console.log(`  discovery : multicast, segment-scoped (TTL 1)${args['hub-secret'] || process.env.HEREONLY_HUB_SECRET ? ', signed' : ''}`);

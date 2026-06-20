@@ -30,6 +30,7 @@ function renderPage() {
  .card h2{font-size:1rem;margin:0 0 .15rem;display:flex;gap:.5rem;align-items:center}
  .badge{font-size:.65rem;background:#1f6feb;color:#fff;border-radius:999px;padding:.05rem .5rem;text-transform:uppercase;letter-spacing:.03em}
  .addr{color:#8a93a3;font-size:.8rem;margin-bottom:.6rem;font-family:ui-monospace,monospace}
+ .addr .ho{color:#7fb0ff;font-weight:600}
  .svc{display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:.45rem 0;border-top:1px solid #1c2330}
  .svc .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .svc .p{color:#6b7280;font-size:.75rem}
  .svc a{font-size:.8rem;text-decoration:none;border:1px solid #2a3340;border-radius:8px;padding:.2rem .55rem;color:#cdd6e2;white-space:nowrap}
@@ -48,14 +49,15 @@ async function tick(){
   const grid=document.getElementById('grid'); grid.innerHTML='';
   for(const e of data.entries){
     const card=document.createElement('div'); card.className='card';
-    let h='<h2>'+esc(e.host)+(e.self?' <span class="badge">this device</span>':'')+'</h2>';
-    h+='<div class="addr">'+esc((e.addrs||[]).join(', '))+'</div>';
+    const key=e.addr||e.id;
+    let h='<h2>'+esc(e.name||e.host)+(e.self?' <span class="badge">this device</span>':'')+'</h2>';
+    h+='<div class="addr">'+(e.addr?'<span class="ho">'+esc(e.addr)+'</span> ':'')+esc((e.addrs||[]).join(', '))+'</div>';
     if(!e.services||!e.services.length){ h+='<div class="empty">no HTTP services advertised</div>'; }
     for(const s of (e.services||[])){
       const direct = e.addrs&&e.addrs.length ? 'http://'+e.addrs[0]+':'+s.port+(s.path||'/') : null;
       h+='<div class="svc"><div class="n">'+esc(s.name)+' <span class="p">:'+s.port+'</span></div><div>';
       if(direct) h+='<a href="'+direct+'" target="_blank" rel="noopener">open</a> ';
-      h+='<a class="go" href="go/'+encodeURIComponent(e.id)+'/'+s.port+(s.path||'/')+'" target="_blank" rel="noopener">via hub</a>';
+      h+='<a class="go" href="go/'+encodeURIComponent(key)+'/'+s.port+(s.path||'/')+'" target="_blank" rel="noopener">via hub</a>';
       h+='</div></div>';
     }
     card.innerHTML=h; grid.appendChild(card);
@@ -121,7 +123,8 @@ function createHubServer(options = {}) {
     }
     const m = url.match(/^\/go\/([^/]+)\/(\d+)(\/.*)?$/);
     if (m) {
-      const peer = getEntries().find((e) => e.id === decodeURIComponent(m[1]));
+      const key = decodeURIComponent(m[1]);
+      const peer = getEntries().find((e) => e.id === key || e.name === key || e.addr === key);
       if (!peer || !peer.addrs || !peer.addrs.length) {
         res.statusCode = 404;
         return res.end('hub: unknown peer');

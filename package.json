@@ -1,6 +1,6 @@
 {
   "name": "hereonly",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Make your LAN a vault. Agent-less, zero-install access control that gates local services to the physical network segment — verified by ARP/NDP adjacency, MAC-pinned session tokens, and segment fingerprinting, with a tamper-evident physical-access audit log. Use it as middleware, a reverse proxy, or forward-auth for nginx/Caddy/Traefik. No agent, no cloud, no IdP.",
   "keywords": [
     "access-control",
