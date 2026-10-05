@@ -1,4 +1,4 @@
-# HereOnly
+# HereOnly 🌱
 
 **Make your LAN a vault.** Zero dependencies. No agent, no cloud, no IdP.
 
@@ -18,6 +18,10 @@ npx github:fizzexual/HereOnly proxy --target http://127.0.0.1:3000 --port 7000
 > **HereOnly does the opposite** — it hardens the boundary so a service stays
 > put, reachable only from the cable or Wi-Fi it's plugged into, even if the host
 > is accidentally exposed to the public internet.
+
+## About
+
+HereOnly is for homelab owners and anyone running services on a LAN who want them reachable only from devices physically on the same network segment, without installing a VPN client on every device. It ships as a Node.js library and CLI with no dependencies: Express/Connect middleware, a standalone reverse proxy, and a forward-auth server for nginx, Caddy and Traefik. Status: version 0.5.0 with unit and integration tests; check the threat model section below before relying on it.
 
 ---
 
